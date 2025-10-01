@@ -1,25 +1,25 @@
-# 🧬 RNAseq Tutorial
+# RNA-seq Tutorial
 
-This tutorial demonstrates a complete **RNA-Seq analysis workflow** using Bioconductor packages.  
+This tutorial demonstrates a complete RNA-seq analysis workflow using Bioconductor packages.  
 
-We’ll walk through:  
-
-- ✅ Quality control of RNA-Seq data  
-- ✅ Normalization and preprocessing  
-- ✅ Differential expression analysis with **DESeq2**  
-- ✅ Pathway enrichment to interpret biological meaning  
-- ✅ Co-expression network analysis with **WGCNA**  
+The workflow covers:  
+- Quality control of RNA-seq data  
+- Normalization and preprocessing  
+- Differential expression analysis with **DESeq2**  
+- Pathway enrichment to interpret biological meaning  
+- Co-expression network analysis with **WGCNA**  
 
 ---
 
-## 🎯 Learning Objective
+## Learning Objective
+
 By the end of this tutorial, you will be able to:  
-- Identify **differentially expressed genes (DEGs)**  
-- Interpret the **biological processes** regulated by these genes  
+- Identify differentially expressed genes (DEGs)  
+- Interpret the biological processes regulated by these genes  
 
 ---
 
-## 📊 Dataset Used
+## Dataset
 
 **Citation**  
 Himes BE, Jiang X, Wagner P, *et al.* (2014).  
@@ -28,17 +28,17 @@ Himes BE, Jiang X, Wagner P, *et al.* (2014).
 
 **Data Source**  
 - [Bioconductor airway package](http://bioconductor.org/packages/release/data/experiment/html/airway.html)  
-- GEO Accession: [GSE52778](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE52778)  
+- GEO accession: [GSE52778](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE52778)  
 
 ---
 
-## 🧪 Experimental Design
+## Experimental Design
 
-- **Treatment**: Dexamethasone (1 μM, 18 hours) → potent synthetic glucocorticoid  
+- **Treatment**: Dexamethasone (1 μM, 18 hours)  
 - **Control**: Untreated cells  
 - **Goal**: Identify genes responsive to glucocorticoid treatment  
 
-Glucocorticoids are widely used to treat **asthma and inflammatory airway diseases**.  
-Understanding their molecular effects on airway smooth muscle cells provides insights into therapeutic mechanisms.  
+Glucocorticoids are widely used to treat asthma and other inflammatory airway diseases.  
+This study characterizes their molecular effects on airway smooth muscle cells, providing insight into therapeutic mechanisms.  
 
 ---
