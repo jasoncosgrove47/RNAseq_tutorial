@@ -1,0 +1,1265 @@
+---
+title: "Analysis of MICAB metagene in BeatAML [ONC0115]{.tangerine}"
+subtitle: "Immuno-Oncology: T cell engagers"
+abstract: "This analysis aims to assess the association between gene expression and clinical metadata for the BeatAML dataset"
+author: 
+  - name: Jason Cosgrove
+    affiliations:
+      - id: id_team
+        name: Computational Medicine Team
+date: today
+format: 
+  servier-html:
+    code-tools: false
+    number-sections: false
+---
+
+
+## Set-up
+
+```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+
+
+knitr::opts_knit$set(root.dir = "/home/EW96_FR5/projects/ImmunoOncology/ONC0115/BeatAML")
+
+knitr::opts_chunk$set(warning = FALSE)
+
+#load packages used in the analysis
+
+library(tidyverse)
+library(bbcVerse)
+library(readxl)
+library(knitr)
+library(scales)
+library(glue)
+library(ggtext)
+library(withr)
+library(DT)
+library(gt)
+library(janitor)
+library(writexl)
+library(broad.depmap)
+library(circlize)
+library(ComplexHeatmap)
+library(ggsignif)
+library(rstatix)
+library(conflicted)
+library(FSA)
+conflicts_prefer(dplyr::filter)
+
+theme_set(theme_bbc())
+
+set.seed(42)
+
+
+```
+
+
+#### helper methods
+```{r, warning=FALSE}
+
+
+# Define the generic plotting function
+scatter_plot <- function(df, x_var, y_var, x_label, y_label, plot_title) {
+  p <- ggplot(df, aes_string(x = x_var, y = y_var)) +
+    geom_point(alpha = 0.2, color = "blue", position = position_jitter(width = 0.2)) +  # Scatter plot with jitter
+    geom_smooth(method = "lm", se = FALSE, color = "red") +  # Trend line (linear model) without confidence interval
+    theme_minimal() +  # Use a minimal theme for a cleaner look
+    labs(
+      x = x_label,
+      y = y_label,
+      title = plot_title
+    ) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels for better readability
+      plot.title = element_text(hjust = 0.5)  # Center the title
+    )
+  
+  return(p)
+}
+
+
+# plot_heatmap <- function(beat_metadata,genes,ann_colors, clustering = TRUE){
+# 
+#   expr <- beat_metadata[,genes]
+#   
+#   # Scale expression data by gene
+#   expr_scaled <- scale(expr, scale = TRUE)
+#   
+#   rownames(beat_metadata) <- beat_metadata$sample_id
+#   rownames(expr_scaled) <- beat_metadata$sample_id
+#   
+#   
+#   # Set color functions
+#   col_fun_expr <- colorRamp2(c(-3, 0, 3), c("navy", "white", "red"))
+# 
+#   # Heatmap annotations
+#   ha <- HeatmapAnnotation(
+#     df = beat_metadata[, c("tissue", "DiseaseStatus", "FAB")],
+#    # MICA_TPM = anno_barplot(beat_metadata[, "MICA"], bar_width = 0.8, height = unit(2, "cm")),
+#     col = ann_colors,
+#     annotation_name_gp = gpar(fontface = "bold")
+#   )
+#   
+#   rha <- rowAnnotation(
+#     tpm = anno_boxplot(
+#       beat_metadata[,genes], height = unit(4, "cm"),
+#       gp = gpar(fill = 'dodgerblue'), extend = 0.05, outline = FALSE, box_width = 0.6,
+#       pch = 1, size = unit(2, "mm"), axis = TRUE
+#     )
+#   )
+#   
+#   if(clustering == TRUE){
+#   # Heatmap for monocyte-related genes
+#   mono <- Heatmap(
+#     t(expr_scaled[rownames(beat_metadata),]),
+#     name = "Z-score",
+#     show_column_names = FALSE,
+#     col = col_fun_expr,
+#     cluster_rows = TRUE,
+#     row_names_gp = gpar(fontface = "bold"),
+#     clustering_distance_columns = "euclidean",
+#     clustering_method_columns = "ward.D2",
+#     clustering_distance_rows = "euclidean",
+#     clustering_method_rows = "ward.D2",
+#     top_annotation = ha,
+#     right_annotation = rha,
+#     column_split = beat_metadata$tissue,
+#     cluster_column_slices = FALSE )
+#   }else{
+#       mono <- Heatmap(
+#     t(expr_scaled[rownames(beat_metadata),]),
+#     name = "Z-score",
+#     show_column_names = FALSE,
+#     col = col_fun_expr,
+#     cluster_rows = FALSE,
+#     row_names_gp = gpar(fontface = "bold"),
+#     clustering_distance_columns = "euclidean",
+#     clustering_method_columns = "ward.D2",
+#     #clustering_distance_rows = "euclidean",
+#     #clustering_method_rows = "ward.D2",
+#     top_annotation = ha,
+#     right_annotation = rha,
+#     column_split = beat_metadata$tissue,
+#     cluster_column_slices = FALSE)
+#   }
+#   
+#     return(mono)
+#     
+# }
+# 
+# 
+# 
+# 
+# 
+# set_heatmap_colors <- function(){
+# # Set annotation colors for heatmaps
+# var1 <- setNames(c("blueviolet", "darkgoldenrod1"), levels(beat_metadata$tissue))
+# var2 <- setNames(c("cyan2", "brown2", "ghostwhite", "lightskyblue", "dodgerblue3", "darkgreen"), levels(beat_metadata$DiseaseStatus))
+# var3 <- setNames(c("#0092FF", "#FFDB00", "#49FF00", "#FF0000", "white", "#0092FF", "#4900FF", "#FF00DB", "green4", "#49FF00", "#0092FF", "#4900FF", "#0092FF", "#4900FF"), levels(beat_metadata$FAB))
+# 
+#   
+# ann_colors <- list(
+#     tissue = var1,
+#     DiseaseStatus = var2,
+#     FAB = var3
+#   )
+# 
+#   return(ann_colors)
+# }
+# 
+
+
+
+
+plot_heatmap <- function(beat_metadata, genes, ann_colors, clustering = TRUE) {
+  # Expression matrix
+  expr <- beat_metadata[, genes, drop = FALSE]
+  
+  # Scale expression data by gene
+  expr_scaled <- scale(expr, scale = TRUE)
+  
+  # Row names
+  rownames(beat_metadata) <- beat_metadata$sample_id
+  rownames(expr_scaled) <- beat_metadata$sample_id
+  
+  # Expression color function
+  col_fun_expr <- circlize::colorRamp2(c(-3, 0, 3), c("navy", "white", "red"))
+  
+  # Determine which annotation columns exist in both metadata and ann_colors
+  annot_cols <- intersect(colnames(beat_metadata), names(ann_colors))
+  
+  # Build top annotation
+  ha <- ComplexHeatmap::HeatmapAnnotation(
+    df = beat_metadata[, annot_cols, drop = FALSE],
+    col = ann_colors[annot_cols],
+    annotation_name_gp = grid::gpar(fontface = "bold")
+  )
+  
+  # Right-hand annotation: boxplots of TPM values
+  rha <- ComplexHeatmap::rowAnnotation(
+    tpm = ComplexHeatmap::anno_boxplot(
+      beat_metadata[, genes, drop = FALSE],
+      height = grid::unit(4, "cm"),
+      gp = grid::gpar(fill = "dodgerblue"),
+      extend = 0.05,
+      outline = FALSE,
+      box_width = 0.6,
+      pch = 1,
+      size = grid::unit(2, "mm"),
+      axis = TRUE
+    )
+  )
+  
+  # Heatmap object
+  mono <- ComplexHeatmap::Heatmap(
+    t(expr_scaled[rownames(beat_metadata), ]),
+    name = "Z-score",
+    show_column_names = FALSE,
+    col = col_fun_expr,
+    cluster_rows = clustering,
+    row_names_gp = grid::gpar(fontface = "bold"),
+    clustering_distance_columns = "euclidean",
+    clustering_method_columns = "ward.D2",
+    clustering_distance_rows = "euclidean",
+    clustering_method_rows = "ward.D2",
+    top_annotation = ha,
+    right_annotation = rha,
+    column_split = beat_metadata$tissue,
+    cluster_column_slices = FALSE
+  )
+  
+  return(mono)
+}
+
+
+
+set_heatmap_colors <- function(beat_metadata) {
+  # Tissue
+  var1 <- setNames(
+    c("blueviolet", "darkgoldenrod1")[seq_along(levels(beat_metadata$tissue))],
+    levels(beat_metadata$tissue)
+  )
+  
+  # DiseaseStatus
+  var2_palette <- c("cyan2", "brown2", "ghostwhite", "lightskyblue", "dodgerblue3", "darkgreen", "grey70")
+  var2 <- setNames(
+    var2_palette[seq_along(levels(beat_metadata$DiseaseStatus))],
+    levels(beat_metadata$DiseaseStatus)
+  )
+  
+  # FAB
+  var3_palette <- c(
+    "#0092FF", "#FFDB00", "#49FF00", "#FF0000", "white",
+    "#0092FF", "#4900FF", "#FF00DB", "green4",
+    "#49FF00", "#0092FF", "#4900FF", "#0092FF", "#4900FF"
+  )
+  var3 <- setNames(
+    var3_palette[seq_along(levels(beat_metadata$FAB))],
+    levels(beat_metadata$FAB)
+  )
+  
+  ann_colors <- list(
+    tissue = var1,
+    DiseaseStatus = var2,
+    FAB = var3
+  )
+  
+  return(ann_colors)
+}
+
+
+
+plot_gene_expression <- function(df, genes, parameter) {
+  # Replace empty strings with NA in the parameter column
+  df[[parameter]][df[[parameter]] == ""] <- NA
+  
+  # Filter out rows with NA in the parameter column
+  df_tmp <- df[complete.cases(df[[parameter]]), ]
+  
+  # Loop through each gene and create a boxplot with jitter
+  for (gene in genes) {
+    df_tmp$logexprs <- df_tmp[[gene]]
+    p <- ggplot(df_tmp, aes_string(x = paste0("factor(", parameter, ")"), y = "logexprs")) +
+      geom_boxplot(outlier.size = 0) +  # Use `outlier.size = 0` to hide default boxplot outliers
+      geom_jitter(width = 0.2, alpha = 0.2, color = "dark red") +  # Jitter points with transparency
+      theme_minimal() +  # Use a minimal theme for a cleaner look
+      labs(
+        x = parameter,
+        y = "log2(tpm + 1)",
+        title = gene
+      ) +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels for better readability
+        plot.title = element_text(hjust = 0.5)  # Center the title
+      )
+    
+    print(p)
+  }
+}
+
+
+
+
+
+
+
+
+
+plot_gene_expression2 <- function(df, gene, parameter) {
+  # Replace empty strings with NA in the parameter column
+  df[[parameter]][df[[parameter]] == ""] <- NA
+  
+  # Filter out rows with NA in the parameter column
+  df_tmp <- df[complete.cases(df[[parameter]]), ]
+  
+  # Prepare data for plotting
+  df_tmp$logexprs <- df_tmp[[gene]]
+  
+  # Check the number of unique groups
+  unique_groups <- unique(df_tmp[[parameter]])
+  num_groups <- length(unique_groups)
+  
+  if (num_groups == 2) {
+    # Perform Wilcoxon rank-sum test
+    wilcox_test <- wilcox.test(logexprs ~ as.factor(df_tmp[[parameter]]), data = df_tmp)
+    p_value <- wilcox_test$p.value
+    
+    # Define comparisons for ggsignif
+    comparison <- list(unique(as.character(df_tmp[[parameter]])))
+    
+    # Create the plot
+    p <- ggplot(df_tmp, aes_string(x = paste0("factor(", parameter, ")"), y = "logexprs")) +
+      geom_boxplot(outlier.size = 0) +  # Use `outlier.size = 0` to hide default boxplot outliers
+      geom_jitter(width = 0.2, alpha = 0.2, color = "dark red") +  # Jitter points with transparency
+      theme_minimal() +  # Use a minimal theme for a cleaner look
+      labs(
+        x = parameter,
+        y = "log2(tpm + 1)",
+        title = paste0(gene, " (Wilcoxon p = ", format.pval(p_value, digits = 3), ")")
+      ) +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels for better readability
+        plot.title = element_text(hjust = 0.5)  # Center the title
+      ) +
+      geom_signif(
+        comparisons = comparison,
+        annotations = paste0("p = ", format.pval(p_value, digits = 3)),
+        y_position = max(df_tmp$logexprs) * 1.05,
+        tip_length = 0.01,
+        textsize = 3
+      )
+    
+  } else {
+    # Perform Kruskal-Wallis test
+    kruskal_test <- kruskal.test(logexprs ~ factor(df_tmp[[parameter]]), data = df_tmp)
+    p_value <- kruskal_test$p.value
+    
+    # Perform Dunn's test for pairwise comparisons
+    dunn_test <- dunnTest(logexprs ~ as.factor(df_tmp[[parameter]]), data = df_tmp, method = "bh")
+    dunn_results <- dunn_test$res
+    
+    # Prepare comparisons for ggsignif
+    significant_comparisons <- lapply(which(dunn_results$P.adj < 0.05), function(i) {
+      comparison <- strsplit(dunn_results$Comparison[i], " - ")[[1]]
+      return(c(comparison[1], comparison[2]))
+    })
+    
+    # Create the plot
+    p <- ggplot(df_tmp, aes_string(x = paste0("factor(", parameter, ")"), y = "logexprs")) +
+      geom_boxplot(outlier.size = 0) +  # Use `outlier.size = 0` to hide default boxplot outliers
+      geom_jitter(width = 0.2, alpha = 0.2, color = "dark red") +  # Jitter points with transparency
+      theme_minimal() +  # Use a minimal theme for a cleaner look
+      labs(
+        x = parameter,
+        y = "log2(tpm + 1)",
+        title = paste0(gene, " (Kruskal-Wallis p = ", format.pval(p_value, digits = 3), ")")
+      ) +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels for better readability
+        plot.title = element_text(hjust = 0.5)  # Center the title
+      )
+    
+    # Add significant comparisons significance annotations, if any
+    if (length(significant_comparisons) > 0) {
+      p <- p + geom_signif(
+        comparisons = significant_comparisons,
+        map_signif_level = TRUE,
+        textsize = 3,
+        y_position = max(df_tmp$logexprs) + seq_len(length(significant_comparisons)) * 0.7
+      )
+    }
+  }
+  
+  # Print the plot
+  print(p)
+}
+
+
+
+corr_plot <- function(df,gene){
+  df$BoneMarrowBlastsPct[df$BoneMarrowBlastsPct == ""] <- NA
+
+    df_tmp <- df[complete.cases(df$BoneMarrowBlastsPct), ]
+    
+   df_tmp$logexprs <- df_tmp[[gene]]
+  
+    # Calculate Spearman's correlation
+  correlation <- cor.test(df_tmp$BoneMarrowBlastsPct, df_tmp$logexprs, method = "spearman")
+  spearman_rho <- correlation$estimate
+  spearman_p <- correlation$p.value
+
+# Create the plot
+  p <- ggplot(df_tmp, aes_string(x = 'BoneMarrowBlastsPct', y = 'logexprs')) +
+    geom_point(alpha = 0.2, color = "blue", position = position_jitter(width = 0.2)) +  # Scatter plot with jitter
+    geom_smooth(method = "lm", se = FALSE, color = "red") +  # Trend line (linear model) without confidence interval
+    theme_minimal() +  # Use a minimal theme for a cleaner look
+    labs(
+      x = "BM blast %",
+      y = "log2(tpm + 1)",
+      title = gene
+    ) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels for better readability
+      plot.title = element_text(hjust = 0.5)  # Center the title
+    ) +
+    annotate("text", x = Inf, y = Inf, label = paste0("Spearman's rho = ", round(spearman_rho, 3), "   p =", format.pval(spearman_p, digits = 3)), 
+             hjust = 1.7, vjust = 2, size = 5, color = "black")
+  
+  
+  print(p)
+
+  
+}
+
+
+```
+
+#### Define genes of interest
+```{r, warning=FALSE}
+
+
+tce <- c("IL3RA", "CD7", "CD74", "CD33","CTSG",'SIGLEC6','TAS2R13',"FLT3","BTN2A1","BTN2A2","BTN3A1","BTN3A2","BTN3A3" )
+
+
+all_genes <- unique(c(tce))
+  
+
+
+tce_filtered <- tce
+
+mic <- c("MICA","MICB", "ULBP1", "ULBP2", "ULBP3", "RAET1E", "RAET1G", "RAET1L","ADAM9", "ADAM10", "ADAM15", "ADAM17", "MMP9", "MMP14", "PDIA6", "PDIA2", "PDIA3", "TXNDC5", "PDIA4", "ERP44", "ERP29" )
+
+tis <- c("CD274", "CXCL9", "CXCL10", "IDO1", "HLA-DRA", "STAT1", "CD8A", "GZMA", "CCL5", "NKG7", "PSMB10", "HLA-E", "LAG3", "CD276", "TIGIT", "PDCD1LG2", "CMKLR1", "HLA-F")
+
+gdT <-  c("CD3D", "CD3E", "TRDC", "TRGC1", "TRGC2")
+
+btn <- c("BTN2A1","BTN2A2","BTN3A1","BTN3A2","BTN3A3")
+
+
+all_genes <- unique(c(tce, tis, gdT, mic,btn))
+
+```
+
+#### Import the dataset
+```{r, warning=FALSE}
+bbcUtils::buckets_mount(yaml_path = "~/projects/ImmunoOncology/ONC0124/Tcell_engagers/buckets.yaml")
+
+
+#units of expression are log2(tpm + 1)
+eset_aml <- readRDS("~/projects/ImmunoOncology/ONC0115/BeatAML/data/beatAML_eset.RDS")
+
+
+beatAML_Etienne <- readRDS("~/projects/ImmunoOncology/ONC0124/Tcell_engagers/inputs/beatAML_deconvoluted.rds")
+
+
+smp_sampled <- with_seed(seed = 42, 
+                         code = {sample(eset_aml$sample_index, 100)})
+
+df_beat_sampled_pc_long <-
+  eset_aml %>%
+  filter_samples_from_values("sample_index", smp_sampled) %>%
+  pivot_and_join() %>% 
+  #mutate(expression = log2(expression + 1)) %>% #data are already log transformed
+  filter(features_id %in% colnames(broad.depmap::gene_expression))
+
+
+
+df_aml <-
+  eset_aml %>%
+  join_samples() %>%
+  select(sample_id = sample_id, type = disease_state,
+         age_yrs = age, any_of(all_genes))
+  
+
+#beat_metadata_tmp <- merge(pData(eset_aml), beatAML_Etienne$clinical, by = "sample_id")
+
+beat_metadata_tmp <- pData(eset_aml)
+
+beat_metadata <- merge(beat_metadata_tmp, df_aml, by = "sample_id")
+
+rm(eset_aml)
+
+metag <- read_tsv("~/projects/ImmunoOncology/ONC0115/BeatAML/metagene_TPM.txt")
+
+
+metag <- metag %>%
+  mutate(metag_log2 = log2(MICA_B + 1),
+         sample_id = Sample)
+
+beat_metadata <- beat_metadata %>% left_join(metag,by = "sample_id")
+
+
+bbcUtils::buckets_umount(yaml_path = "~/projects/ImmunoOncology/ONC0124/Tcell_engagers/buckets.yaml")
+
+```
+
+#### Data preprocessing
+
+```{r, message=FALSE, warning=FALSE}
+
+  # Convert metadata columns to appropriate data types
+beat_metadata <- beat_metadata %>%
+    mutate(
+      tissue = as.factor(tissue),
+      FAB = as.factor(fab_classification),
+      BoneMarrowBlastsPct = as.numeric(percent_blast)
+    ) 
+
+beat_metadata <- beat_metadata %>%
+  mutate(
+    disease_status = as.character(disease_status),
+    disease_status = ifelse(disease_status == "NA" | is.na(disease_status), 
+                            "missing", disease_status),
+    disease_status = factor(disease_status)
+  )
+
+
+beat_metadata <- beat_metadata %>% 
+    mutate(DiseaseStatus = as.factor(disease_status))
+
+beat_metadata <- beat_metadata %>%
+    filter(!is.na(tpm_scaling_factor))
+
+ann_colors <- set_heatmap_colors(beat_metadata) 
+
+```
+
+```{r, message=FALSE, warning=FALSE}
+
+boxplot <- function(gene, dataset) {
+  
+  df <- switch (dataset,
+                "MET500" = df_met,
+                "TCGA" = df_tcga_tumor,
+                "GTEx" = df_gtex,
+                "BeatAML" = beat_metadata)
+  
+  
+  df <- df %>%
+    filter(DiseaseStatus %in% 
+             c('primary','secondary', 
+               'recurrent','remission') ) %>%
+  mutate(DiseaseStatus = droplevels(DiseaseStatus))
+  
+  # Checking the number of observations in each DiseaseStatus group
+filtered_df <- df %>%
+  group_by(DiseaseStatus) %>%
+  filter(n() > 10) %>%  # keeping groups with more than 1 observation
+  ungroup()
+
+# Perform Kruskal-Wallis test
+kruskal_test_result <- filtered_df %>%
+  kruskal_test(as.formula(paste(gene, "~ DiseaseStatus")))
+
+# Pairwise comparison
+pairwise_test_result <- filtered_df %>%
+  wilcox_test(as.formula(paste(gene, "~ DiseaseStatus"))) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance()
+
+# Extracting comparisons for use in geom_signif
+comparisons <- pairwise_test_result %>%
+  #filter(p.adj.signif != "ns") %>%  # Only significant pairwise comparisons
+  select(group1, group2) %>%
+  arrange(group1, group2)
+
+
+
+# Adding significance to the plot
+significance_plot <- filtered_df %>%
+  mutate(type = fct_reorder(DiseaseStatus, .data[[gene]])) %>%
+  ggplot() +
+  aes(x = DiseaseStatus, y = .data[[gene]], color = DiseaseStatus) +
+  geom_boxplot(alpha = 0, outliers = FALSE, show.legend = FALSE, color = "grey30") +
+  geom_jitter(alpha = 0.1, width = 0.2) +
+  labs(x = NULL, y = "log2(TPM + 1)", title = str_c(gene, " expression in ", dataset)) +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  geom_signif(comparisons = as.list(comparisons), 
+              map_signif_level = TRUE, 
+              y_position = seq(1.2, by = 0.2, 
+                               length.out = nrow(comparisons)) + max(df[[gene]]))
+
+ print(significance_plot)
+}
+
+
+```
+
+## Data Overview: Expression Patterns for Different Clinical Parameters
+
+
+### Expression thresholds
+
+```{r, warning=FALSE}
+
+
+
+th_beat <- 1
+
+draw_kernel(df_beat_sampled_pc_long, x_label_kernel = "expression",
+            id_colname = "samples_id", log2 = FALSE, threshold = th_beat,
+            title = "Kernel plot for sampled TCGA samples")
+
+
+```
+
+### Expression across the entire dataset
+
+```{r, eval = TRUE}
+
+tce <- c(tce,"metag_log2")
+
+# Create df_long, remove NAs
+df_long <- beat_metadata[,c("sample_id",tce)] %>%
+  pivot_longer(cols = -sample_id, names_to = "Gene", values_to = "Expression") %>%
+  filter(!is.na(Expression))  # Remove NAs
+
+# Reorder 'Gene' factor levels by mean expression
+df_long <- df_long %>%
+  group_by(Gene) %>%
+  mutate(mean_expression = mean(Expression)) %>%
+  ungroup() %>%
+  arrange(mean_expression)  # Arrange genes by mean expression
+
+df_long$Gene <- factor(df_long$Gene, levels = unique(df_long$Gene))
+
+# Create the plot
+ggplot(df_long, aes(x = Gene, y = Expression, color = Gene)) +
+  geom_boxplot(show.legend = FALSE, outliers.shape = NA) +  # Boxplot for each gene, hide outliers
+  geom_jitter(alpha = 0.01, width = 0.2, show.legend = FALSE) +
+  labs(x = NULL, y = "Expression Level", title = "Gene Expression Boxplots") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))  # Rotate x-axis labels
+
+
+
+
+```
+
+
+
+
+
+
+### Relative expression patterns
+
+
+```{r, warning=FALSE}
+
+th_beat<- 1
+
+
+df_beat_hml <-
+  beat_metadata %>% 
+  mutate(across(any_of(tce), 
+                ~ discretize_with_threshold(., type = "meansd", 
+                                            threshold = c(th_beat, NA), below_threshold = "Not Expressed")),
+         across(any_of(tce), ~ factor(., levels = c("Not Expressed", "Low", "Medium", "High")))) %>% 
+  mutate(type2 = append_count(type), .before = type)
+
+df_beat_hml_long <-
+  df_beat_hml %>% 
+  select(type, type2, any_of(tce)) %>% 
+  add_count(type) %>% 
+  pivot_longer(-c(type, type2, n), names_to = "gene", values_to = "level") %>% 
+  count(type, type2, n, gene, level, name = "nn") %>% 
+  group_by(type,  type2, gene) %>% 
+  mutate(p = nn / sum(nn)) %>% 
+  ungroup()
+
+
+
+df_beat_th <-
+  beat_metadata %>%
+  select(any_of(tce)) %>% 
+  pivot_longer(everything(), names_to = "gene", values_to = "expr") %>% 
+  filter(expr > th_beat) %>% 
+  group_by(gene) %>% 
+  summarise(across(expr, .fns = list(mean = mean, sd = sd, 
+                                     min = min, max = max), 
+                   .names = "{.fn}"))
+
+str_beat_th <-
+  df_beat_th %>% 
+  mutate(uth = round(mean + sd, 1),
+         lth = round(mean - sd, 1)) %>% 
+  mutate(ths = as.character(glue("H/M and M/L thresholds: {uth} & {lth}"))) %>% 
+  pull(ths, name = gene)
+
+
+
+
+stacked_bars <- function(gene, data) {
+  
+  dataset_hml <- switch (data,
+    "TCGA" = df_tcga_tumor_hml_long,
+    "MET500" = df_met_hml_long,
+    "GTEx" = df_gtex_hml_long,
+    "BeatAML" = df_beat_hml_long,
+  )  
+  
+  str_th <- switch (data,
+    "TCGA" = str_tcga_th,
+    "MET500" = str_met_th,
+    "GTEx" = str_gtex_th,
+    "BeatAML" = str_beat_th,
+  )
+  
+  dataset_hml_2 <-
+    dataset_hml %>% 
+    select(type, type2, n, gene, level, p) %>% 
+    filter(.data$gene == .env$gene) %>%
+    pivot_wider(names_from = level, values_from = p, values_fill = 0, names_expand = TRUE) %>% 
+    mutate(type2 = fct_reorder(type2, n, .desc = FALSE),
+           type2 = fct_reorder(type2, Low, .desc = FALSE),
+           type2 = fct_reorder(type2, Medium, .desc = FALSE),
+           type2 = fct_reorder(type2, High, .desc = FALSE)) %>% 
+    pivot_longer(-c(type, type2, n, gene), names_to = "level", values_to = "p") %>% 
+    mutate(level = fct_relevel(level, "Not Expressed", "Low", "Medium", "High"))
+  
+  ggplot(dataset_hml_2) +
+    aes(x = p, y = type2, fill = level) +
+    geom_col() +
+    geom_vline(xintercept = c(0.25, 0.5, 0.75),
+               linetype = "dashed", color = "grey40") +
+    scale_x_continuous(labels = label_percent(), 
+                       expand = c(0.005, 0.005)
+                       ) +
+    scale_fill_manual(values = col_hml) +
+    labs(title = str_c(gene, " level in ", data, ": ", legend_hml),
+         subtitle = str_th[gene],
+         x = NULL, y = NULL, fill = NULL) +
+    theme(legend.position = "none", plot.title = element_markdown(), 
+          panel.grid.major.y = element_blank())
+}
+
+col_hml <- c(High = "#E12A3C", Medium = "#FFBF03", Low = "#5380E4",
+             "Not Expressed" = "grey70")
+
+legend_hml <-
+  glue("<span style='color:{col_hml}'>{names(col_hml)}</span>") %>% 
+  combine_words(and = " or ")
+
+```
+
+::: {.panel-tabset}
+
+
+
+```{r childs999, eval = TRUE}
+#| results: asis
+#| echo: false
+for (i in c(tce)) {
+  
+  db <- "BeatAML"
+  a <- knit_child("~/projects/ImmunoOncology/ONC0124/Tcell_engagers/quarto/targets3.qmd", 
+                  quiet = T)
+  cat(a, sep = "\n")
+}
+
+
+```
+:::
+
+
+
+### Expression across diseases
+::: {.panel-tabset}
+
+
+```{r childs1399, eval = FALSE}
+#| results: asis
+#| echo: false
+
+  df <- beat_metadata %>%
+    filter(disease_state %in% 
+             c( "control" , "acute myeloid leukemia (LAML)" , "acute leukemia of ambiguous lineage (ALAL)" ,
+ "myelodysplastic syndrome" , "myeloproliferative neoplasm" ,"myelodysplastic/myeloproliferative neoplasm") ) #%>%
+  #mutate(disease_state = droplevels(disease_state))
+
+for (i in c(tce)) {
+  
+  var <- "disease_state"
+   correlation_plot <- FALSE
+  a <- knit_child("~/projects/ImmunoOncology/ONC0124/Tcell_engagers/quarto/targets2.qmd", 
+                  quiet = T)
+  cat(a, sep = "\n")
+}
+
+```
+
+:::
+
+
+### Expression in Bone Marrow vs Peripheral Blood
+
+::: {.panel-tabset}
+
+
+
+
+```{r childs1, eval = TRUE}
+#| results: asis
+#| echo: false
+
+  df <- beat_metadata 
+
+for (i in c(tce)) {
+   correlation_plot <- FALSE
+  var <- "tissue"
+  a <- knit_child("~/projects/ImmunoOncology/ONC0124/Tcell_engagers/quarto/targets2.qmd", 
+                  quiet = T)
+  cat(a, sep = "\n")
+}
+
+```
+
+::: 
+
+
+
+### Expression across disease subtypes
+::: {.panel-tabset}
+
+
+```{r childs13, eval = TRUE}
+#| results: asis
+#| echo: false
+
+  df <- beat_metadata %>%
+    filter(DiseaseStatus %in% 
+             c('primary','secondary', 
+               'recurrent','remission') ) %>%
+  mutate(DiseaseStatus = droplevels(DiseaseStatus))
+
+for (i in c(tce)) {
+  
+  var <- "DiseaseStatus"
+   correlation_plot <- FALSE
+  a <- knit_child("~/projects/ImmunoOncology/ONC0124/Tcell_engagers/quarto/targets2.qmd", 
+                  quiet = T)
+  cat(a, sep = "\n")
+}
+
+```
+
+::: 
+
+### Blast %
+
+::: {.panel-tabset}
+
+
+
+```{r childs199, eval = TRUE}
+#| results: asis
+#| echo: false
+
+df <- beat_metadata %>%
+  mutate(BoneMarrowBlastsPct = as.character(BoneMarrowBlastsPct),
+         BoneMarrowBlastsPct = na_if(BoneMarrowBlastsPct, "")) %>%  # Replace empty strings with NA
+  filter(!is.na(BoneMarrowBlastsPct)) %>%  # Filter out rows with NA in BoneMarrowBlastsPct
+  mutate(BoneMarrowBlastsPct = as.numeric(BoneMarrowBlastsPct))  # Convert BoneMarrowBlastsPct back to numeric
+
+
+for (i in c(tce)) {
+  
+  correlation_plot <- TRUE
+  a <- knit_child("~/projects/ImmunoOncology/ONC0124/Tcell_engagers/quarto/targets2.qmd", 
+                  quiet = T)
+  cat(a, sep = "\n")
+}
+
+```
+
+
+:::
+
+### FAB classification
+
+
+::: {.panel-tabset}
+```{r childs1987983, eval = TRUE}
+#| results: asis
+#| echo: false
+
+df <- beat_metadata %>%
+  filter(FAB != "" & FAB != "NA") %>%
+  droplevels()
+    
+
+for (i in c(tce)) {
+  
+  var <- "FAB"
+  correlation_plot <- FALSE
+  a <- knit_child("~/projects/ImmunoOncology/ONC0124/Tcell_engagers/quarto/targets2.qmd", 
+                  quiet = T)
+  cat(a, sep = "\n")
+}
+
+```
+:::
+
+
+### Risk Factor (ELN 2017)
+
+
+::: {.panel-tabset}
+
+```{r childs134, eval = TRUE}
+#| results: asis
+#| echo: false
+
+beat_metadata$ELN <- beat_metadata$risk_category_eln2017
+
+  df <- beat_metadata %>%
+    filter(ELN %in% c("intermediate","favorable","adverse") ) 
+
+for (i in c(tce)) {
+  
+  var <- "ELN"
+   correlation_plot <- FALSE
+  a <- knit_child("~/projects/ImmunoOncology/ONC0124/Tcell_engagers/quarto/targets2.qmd", 
+                  quiet = T)
+  cat(a, sep = "\n")
+}
+
+```
+:::
+
+## Demographic Parameters
+
+
+### Expression vs Age at Diagnosis
+
+::: {.panel-tabset}
+
+
+```{r childs154, eval = TRUE}
+#| results: asis
+#| echo: false
+
+
+
+  df <- beat_metadata %>%
+    filter(age != "" ) 
+
+for (i in c(tce)) {
+  
+  var <- "age"
+   correlation_plot <- TRUE
+  a <- knit_child("~/projects/ImmunoOncology/ONC0124/Tcell_engagers/quarto/targets2.qmd", 
+                  quiet = T)
+  cat(a, sep = "\n")
+}
+
+```
+
+
+:::
+
+
+### Gender
+
+::: {.panel-tabset}
+
+
+```{r childs164, eval = TRUE}
+#| results: asis
+#| echo: false
+
+
+
+  df <- beat_metadata %>%
+    filter(gender %in% c("female","male")) 
+
+for (i in c(tce)) {
+  
+  var <- "gender"
+   correlation_plot <- FALSE
+  a <- knit_child("~/projects/ImmunoOncology/ONC0124/Tcell_engagers/quarto/targets2.qmd", 
+                  quiet = T)
+  cat(a, sep = "\n")
+}
+
+```
+
+:::
+
+
+
+## Data Overview: Heatmap Visualisations
+
+::: {.panel-tabset}
+
+### Whole Cohort
+```{r, message=FALSE, warning=FALSE}
+#| echo: false
+#| global: true
+#| message: false
+#| fig-height: 14
+#| fig-width: 18
+#| column: screen-inset-right
+
+
+
+p <- plot_heatmap(beat_metadata, tce, ann_colors, clustering = TRUE)
+
+draw(p)
+
+
+p <- plot_heatmap(beat_metadata, tce, ann_colors, clustering = FALSE)
+
+draw(p)
+
+```
+
+
+
+
+
+### Primary and Secondary BM
+```{r,  message=FALSE, warning=FALSE}
+#| echo: false
+#| global: true
+#| message: false
+#| fig-height: 14
+#| fig-width: 18
+#| column: screen-inset-right
+
+beat_metadata_prim=beat_metadata %>%
+  filter(DiseaseStatus %in% c("primary","second primary", "secondary")) %>%
+  filter(tissue=="bone marrow")
+
+p <- plot_heatmap(beat_metadata_prim, tce,ann_colors, clustering = TRUE)
+
+draw(p)
+
+p <- plot_heatmap(beat_metadata_prim, tce,ann_colors, clustering = FALSE)
+
+draw(p)
+
+```
+
+
+### Recurrent BM
+```{r,  message=FALSE, warning=FALSE}
+#| echo: false
+#| global: true
+#| message: false
+#| fig-height: 14
+#| fig-width: 18
+#| column: screen-inset-right
+
+
+beat_metadata_rec=beat_metadata %>%
+  filter(DiseaseStatus %in% c("recurrent","recurrent;secondary")) %>%
+  filter(tissue=="bone marrow")
+
+
+p <- plot_heatmap(beat_metadata_rec,tce,ann_colors,clustering = TRUE)
+
+draw(p)
+
+p <- plot_heatmap(beat_metadata_rec,tce,ann_colors, clustering = FALSE)
+
+draw(p)
+
+```
+
+### Remission BM
+```{r,  message=FALSE, warning=FALSE, eval = FALSE}
+#| echo: false
+#| global: true
+#| message: false
+#| fig-height: 14
+#| fig-width: 18
+#| column: screen-inset-right
+
+beat_metadata_rem=beat_metadata %>%
+  filter(DiseaseStatus %in% c( "remission")) %>%
+  filter(tissue=="bone marrow")
+
+
+tce_tmp <- tce[tce != 'RAET1L']
+
+p <- plot_heatmap(beat_metadata_rem, tce_tmp,ann_colors, clustering = TRUE)
+
+draw(p)
+
+p <- plot_heatmap(beat_metadata_rem, tce,ann_colors, clustering = FALSE)
+
+draw(p)
+
+
+```
+
+:::
+
+
+
+
+## Mutations: BM Samples Only
+
+
+```{r, warning=FALSE}
+
+mutations <- grep("mutation_type",colnames(beat_metadata),value = T)
+
+result <- beat_metadata %>%
+  select(all_of(mutations)) %>%
+  summarise_all(~sum(. != ""))
+
+#only keep mutations where we have results for at least 10 patients. 
+mutations_filtered <- names(result[which(result > 10)])
+
+
+
+```
+
+::: {.panel-tabset}
+
+```{r childsmut1, eval = FALSE}
+#| results: asis
+#| echo: false
+
+df <- beat_metadata %>%
+  filter(tissue=="bone marrow")
+
+for(i in c(mutations_filtered)) {
+  
+  mut <- i
+  df[,mut][df[[mut]] == ""] <- NA
+
+  df_tmp <- df[!is.na(df[[mut]]), ]
+
+  if(length(unique(df_tmp[[mut]])) > 1 ){
+
+    a <- knit_child("~/projects/ImmunoOncology/ONC0124/Tcell_engagers/quarto/plot_mutation_expression.qmd", 
+                    quiet = T)
+    cat(a, sep = "\n")
+  
+  }
+}
+
+
+```
+
+
+:::
+
+
+
+
+## Mutations: Blood Samples Only
+
+
+```{r, warning=FALSE, eval = FALSE}
+
+mutations <- grep("mutation_type",colnames(beat_metadata),value = T)
+
+result <- beat_metadata %>%
+  select(all_of(mutations)) %>%
+  summarise_all(~sum(. != ""))
+
+#only keep mutations where we have results for at least 10 patients. 
+mutations_filtered <- names(result[which(result > 10)])
+
+
+
+```
+
+::: {.panel-tabset}
+
+```{r childsmut2, eval = FALSE}
+#| results: asis
+#| echo: false
+
+df <- beat_metadata %>%
+  filter(tissue=="peripheral blood")
+
+for(i in c(mutations_filtered)) {
+  
+  mut <- i
+  df[,mut][df[[mut]] == ""] <- NA
+
+  df_tmp <- df[!is.na(df[[mut]]), ]
+
+  if(length(unique(df_tmp[[mut]])) > 1){
+
+    a <- knit_child("~/projects/ImmunoOncology/ONC0124/Tcell_engagers/quarto/plot_mutation_expression.qmd", 
+                    quiet = T)
+    cat(a, sep = "\n")
+  
+  }
+}
+
+
+```
+
+
+:::
+
+
+## Mutations: Recurrent Samples Only
+
+::: {.panel-tabset}
+
+```{r childsmut211, eval = FALSE}
+#| results: asis
+#| echo: false
+
+df <- beat_metadata %>%
+  filter(disease_status %in% c("recurrent","recurrent;secondary"))
+
+for(i in c(mutations_filtered)) {
+  
+  mut <- i
+  df[,mut][df[[mut]] == ""] <- NA
+
+  df_tmp <- df[!is.na(df[[mut]]), ]
+
+  if(length(unique(df_tmp[[mut]])) > 1){
+
+    a <- knit_child("~/projects/ImmunoOncology/ONC0124/Tcell_engagers/quarto/plot_mutation_expression.qmd", 
+                    quiet = T)
+    cat(a, sep = "\n")
+  
+  }
+}
+
+
+```
+
+:::
+
+## Reproducibility token
+
+::: {.callout-caution collapse="true"}
+### Expand to see R and packages versions
+
+```{r session-info}
+xfun::session_info()
+```
+:::
+

@@ -1,0 +1,584 @@
+---
+title: "RNA-Seq Analysis: A Comprehensive Tutorial"
+subtitle: "Differential Expression and Network Analysis with DESeq2 and WGCNA"
+author: "Jason Cosgrove"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: flatly
+    highlight: tango
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: show
+    df_print: paged
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6,
+  fig.align = "center"
+)
+
+# Load required libraries
+library(here)
+library(airway)
+library(DESeq2)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(WGCNA)
+library(pheatmap)
+library(EnhancedVolcano)
+library(vsn)
+library(AnnotationDbi)
+library(dplyr)
+
+# Set working directory using the 'here' package for reproducibility
+i_am("rnaseq.Rmd")
+```
+
+---
+
+# Introduction {.tabset}
+
+## About This Tutorial
+
+This tutorial demonstrates a complete RNA-Seq analysis workflow using Bioconductor packages. We'll walk through:
+
+- **Quality control** of RNA-Seq data
+- **Normalization** and preprocessing
+- **Differential expression analysis** with DESeq2
+- **Pathway enrichment** to interpret biological meaning
+- **Co-expression network analysis** with WGCNA
+
+> **Learning Objective**: By the end of this tutorial, you'll understand how to identify differentially expressed genes and the biological processes they regulate.
+
+## The Experiment
+
+### Study Overview
+
+**Citation**: Himes BE, Jiang X, Wagner P, et al. (2014). "RNA-Seq Transcriptome Profiling Identifies CRISPLD2 as a Glucocorticoid Responsive Gene that Modulates Cytokine Function in Airway Smooth Muscle Cells." *PLoS One*. 9(6):e99625. [PMID: 24926665](https://pubmed.ncbi.nlm.nih.gov/24926665/)
+
+**Data Source**: [Bioconductor airway package](https://bioconductor.org/packages/release/data/experiment/html/airway.html) | GEO: [GSE52778](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE52778)
+
+### Experimental Design
+
+This study used RNA-Seq to characterize transcriptomic changes in **four primary human airway smooth muscle (ASM) cell lines** treated with:
+
+- **Treatment**: Dexamethasone (1 μM, 18 hours) — a potent synthetic glucocorticoid
+- **Control**: Untreated cells
+- **Goal**: Identify genes responsive to glucocorticoid treatment
+
+Glucocorticoids are commonly used to treat asthma and other inflammatory airway diseases. Understanding their molecular effects on airway smooth muscle cells provides insights into therapeutic mechanisms.
+
+---
+
+# Data Loading and Preparation
+
+## Loading the Airway Dataset
+
+We'll use the `airway` package, which provides pre-processed RNA-Seq count data from the study described above.
+
+```{r data}
+# Load the airway dataset
+data("airway")
+
+# Extract the count matrix (genes × samples)
+counts <- assay(airway)
+
+# Extract sample metadata (experimental conditions)
+coldata <- colData(airway)
+
+# Display sample information
+print(coldata[, c("cell", "dex")])
+```
+
+**What we have**:
+
+- `counts`: A matrix with **`r nrow(counts)` genes** across **`r ncol(counts)` samples**
+- `coldata`: Metadata describing each sample's cell line and treatment status
+
+---
+
+# Quality Control and Preprocessing
+
+## Assessing Sequencing Depth
+
+Before analysis, we need to verify that all samples have adequate and comparable sequencing coverage.
+
+```{r library-sizes, fig.height=5}
+# Calculate total counts per sample (library size)
+librarySizes <- colSums(counts)
+
+# Visualize library sizes
+barplot(librarySizes, 
+        main = "Sequencing Depth Across Samples",
+        ylab = "Total Read Counts",
+        las = 2, 
+        cex.names = 0.7,
+        col = "steelblue",
+        border = "white")
+abline(h = mean(librarySizes), col = "red", lwd = 2, lty = 2)
+legend("topright", legend = "Mean depth", col = "red", lwd = 2, lty = 2)
+```
+
+**Interpretation**: All samples show relatively consistent sequencing depth, indicating good quality data. Large differences in library size would require normalization or further investigation.
+
+---
+
+## Filtering Low-Abundance Genes
+
+### Why Filter?
+
+Genes with very low counts across all samples:
+
+- Have **low statistical power** for detecting differential expression
+- Contribute **noise** to the analysis
+- Increase the **multiple testing burden** (reducing power to detect true positives)
+
+**Our filtering strategy**: Keep genes with **≥10 counts in at least 2 samples**. This ensures we retain genes expressed in at least one experimental condition.
+
+```{r filter}
+# Apply filtering threshold
+keep <- rowSums(counts >= 10) >= 2
+counts_filtered <- counts[keep, ]
+
+# Calculate summary statistics
+genes_before <- nrow(counts)
+genes_after <- nrow(counts_filtered)
+genes_removed <- genes_before - genes_after
+```
+
+### Visualizing the Impact of Filtering
+
+```{r filter-viz, fig.width=12, fig.height=5}
+# Calculate mean expression before and after filtering
+meanCounts_before <- rowMeans(counts)
+meanCounts_after  <- rowMeans(counts_filtered)
+
+# Compute kernel density estimates
+dens_before <- density(log2(meanCounts_before + 1))
+dens_after  <- density(log2(meanCounts_after + 1))
+
+# Create visualization
+plot(dens_before,
+     main = "Effect of Filtering on Gene Expression Distribution",
+     xlab = "log₂(mean counts + 1)",
+     ylab = "Density",
+     lwd = 2.5, 
+     col = "skyblue3")
+lines(dens_after, lwd = 2.5, col = "darkgreen")
+abline(v = log2(10), col = "red", lwd = 2, lty = 2)
+
+# Add annotations
+legend("topright",
+       legend = c(paste0("Before filtering (n = ", format(genes_before, big.mark=","), ")"),
+                  paste0("After filtering (n = ", format(genes_after, big.mark=","), ")"),
+                  "Threshold (10 counts)"),
+       col = c("skyblue3", "darkgreen", "red"),
+       lwd = c(2.5, 2.5, 2),
+       lty = c(1, 1, 2))
+```
+
+**Results**:
+
+- **Before filtering**: `r format(genes_before, big.mark=",")` genes
+- **After filtering**: `r format(genes_after, big.mark=",")` genes  
+- **Genes removed**: `r format(genes_removed, big.mark=",")` (`r round(genes_removed/genes_before*100, 1)`%)
+
+The filtering step removes the "noise peak" of very low-expressed genes, improving our statistical power.
+
+---
+
+# DESeq2 Analysis Pipeline
+
+## Creating the DESeq2 Object
+
+DESeq2 requires three components:
+
+1. **Count matrix**: Raw, unfiltered counts
+2. **Sample metadata**: Experimental design information
+3. **Design formula**: Statistical model specification
+
+```{r makedeseqobj}
+# Create DESeq2 dataset
+dds <- DESeqDataSetFromMatrix(
+  countData = counts_filtered,
+  colData   = coldata,
+  design    = ~ cell + dex  # Adjust for cell line, test dex effect
+)
+```
+
+**Design formula explained**: `~ cell + dex`
+
+- `cell`: Covariate accounting for baseline differences between cell lines
+- `dex`: Variable of interest (treated vs. untreated)
+
+This design controls for cell line variability while testing for dexamethasone effects.
+
+---
+
+## Annotating Genes with Symbols
+
+Ensembl IDs are not human-readable. Let's convert them to gene symbols for easier interpretation.
+
+```{r annotate-genes}
+# Extract Ensembl IDs from rownames
+ensg_ids <- rownames(dds)
+
+# Map to gene symbols using org.Hs.eg.db
+gene_symbols <- mapIds(
+  org.Hs.eg.db,
+  keys = ensg_ids,
+  column = "SYMBOL",
+  keytype = "ENSEMBL",
+  multiVals = "first"
+)
+
+# Replace rownames with symbols (keep ENSG if no symbol found)
+symbols <- gene_symbols[rownames(dds)]
+rownames(dds) <- ifelse(is.na(symbols), rownames(dds), symbols) %>% 
+  make.unique()  # Ensure unique names
+```
+
+---
+
+## Running the DESeq2 Pipeline
+
+DESeq2 performs multiple steps in one command:
+
+1. **Size factor estimation**: Normalizes for sequencing depth
+2. **Dispersion estimation**: Models gene-wise variability
+3. **Negative binomial GLM fitting**: Tests for differential expression
+4. **Multiple testing correction**: Controls false discovery rate
+
+```{r deseqpipeline, results='hide'}
+# Run the complete DESeq2 pipeline
+dds <- DESeq(dds)
+
+# Extract normalized counts for visualization
+norm_counts <- counts(dds, normalized = TRUE)
+```
+
+### Normalization Effectiveness
+
+```{r norm-comparison, fig.height=6}
+# Compare library sizes before and after normalization
+raw_libsize  <- colSums(counts_filtered)
+norm_libsize <- colSums(norm_counts)
+
+# Prepare data for plotting
+all_libsize <- c(raw_libsize, norm_libsize)
+sample_labels <- rep(colnames(counts_filtered), 2)
+group_labels  <- c(rep("Raw", length(raw_libsize)),
+                   rep("Normalized", length(norm_libsize)))
+
+# Create comparative barplot
+barplot(all_libsize,
+        col = ifelse(group_labels == "Raw", "coral", "mediumseagreen"),
+        names.arg = paste(sample_labels, group_labels, sep = "\n"),
+        las = 2,
+        ylab = "Library Size (Total Counts)",
+        main = "Normalization Equalizes Library Sizes",
+        cex.names = 0.7)
+
+legend("topright",
+       legend = c("Raw Counts", "Normalized Counts"),
+       fill = c("coral", "mediumseagreen"))
+```
+
+**Note**: Normalized counts are used **only for visualization and exploratory analysis**. DESeq2's differential expression testing operates on raw counts internally.
+
+---
+
+# Exploratory Data Analysis
+
+## Variance Stabilization
+
+RNA-Seq count data exhibits a mean-variance relationship (higher expressed genes have higher variance). Variance stabilizing transformation (VST) removes this relationship, making the data suitable for PCA and clustering.
+
+```{r vst-comparison, fig.width=12, fig.height=5}
+# Apply variance stabilizing transformation
+vsd <- vst(dds, blind = FALSE)
+
+# Compare before and after VST
+par(mfrow = c(2, 1))
+meanSdPlot(log2(counts(dds, normalized = TRUE) + 1), 
+           main = "Log₂ Normalized Counts")
+meanSdPlot(assay(vsd), 
+           main = "After Variance Stabilization")
+```
+
+**Left panel**: Clear mean-variance relationship in log-transformed counts  
+**Right panel**: VST successfully stabilizes variance across expression levels
+
+---
+
+## Principal Component Analysis (PCA)
+
+PCA reveals the major sources of variation in the dataset. We expect samples to cluster by treatment condition.
+
+```{r pca}
+plotPCA(vsd, intgroup = "dex") + 
+  ggtitle("PCA: Sample Clustering by Dexamethasone Treatment") +
+  theme_minimal(base_size = 12)
+```
+
+**Interpretation**:
+
+- **PC1** (x-axis) captures the largest source of variation and clearly separates treated from untreated samples
+- This indicates that dexamethasone treatment has a **strong effect** on gene expression
+- Tight clustering within groups suggests good reproducibility
+
+---
+
+## Sample-to-Sample Distance Heatmap
+
+This heatmap shows how similar samples are to each other based on their entire transcriptome.
+
+```{r heatmap, fig.width=8, fig.height=7}
+# Calculate Euclidean distances between samples
+sampleDist <- dist(t(assay(vsd)))
+
+# Create annotated heatmap
+pheatmap(as.matrix(sampleDist), 
+         clustering_distance_rows = sampleDist,
+         clustering_distance_cols = sampleDist,
+         main = "Sample-to-Sample Distance Matrix",
+         color = colorRampPalette(c("navy", "white", "firebrick3"))(50))
+```
+
+**Key findings**:
+
+- Samples cluster by treatment status (blue = more similar, red = more different)
+- Treated samples are most similar to other treated samples
+- This confirms the PCA results: treatment is the dominant source of variation
+
+---
+
+# Differential Expression Analysis
+
+## Identifying DEGs
+
+We'll identify genes differentially expressed between dexamethasone-treated and untreated cells.
+
+```{r dea}
+# Extract differential expression results
+res <- results(dds, contrast = c("dex", "trt", "untrt"))
+
+# Display summary
+summary(res)
+
+# Sort by adjusted p-value
+resOrdered <- res[order(res$padj), ]
+
+# Preview top results
+head(resOrdered, 10)
+```
+
+## Volcano Plot Visualization
+
+A volcano plot simultaneously displays **statistical significance** (y-axis) and **biological significance** (x-axis).
+
+```{r volcano, fig.width=10, fig.height=8}
+EnhancedVolcano(resOrdered,
+                lab = rownames(resOrdered),
+                x = "log2FoldChange",
+                y = "padj",
+                pCutoff = 0.05,
+                FCcutoff = 1.0,
+                title = "Differential Expression: Dexamethasone vs. Control",
+                subtitle = "Significant DEGs: padj < 0.05 and |log₂FC| > 1",
+                pointSize = 2.0,
+                labSize = 4.0,
+                col = c("grey30", "forestgreen", "royalblue", "red2"),
+                colAlpha = 0.7)
+```
+
+**How to interpret**:
+
+- **Red points**: Significantly upregulated or downregulated (padj < 0.05, abs(log₂FC) > 1)
+- **Blue points**: Not significant - Gene does not meet threshold for log-fold change
+- **Grey points**: Not significant - Gene does not meet logfc or p-value thresholds
+- **Green points**: Not significant - Gene does not p-value threshold
+- **Y-axis**: -log₁₀(padj) — higher values = more significant
+
+---
+
+# Pathway Enrichment Analysis
+
+## Biological Interpretation via GO Enrichment
+
+Individual genes tell part of the story, but **pathways** reveal the coordinated biological processes affected by treatment.
+
+```{r pathway, fig.width=10, fig.height=7}
+# Extract significantly differentially expressed genes
+sigGenes <- subset(resOrdered, padj < 0.05 & abs(log2FoldChange) > 1)
+geneSymbols <- rownames(sigGenes)
+
+# Convert gene symbols to Entrez IDs (required for enrichment analysis)
+entrezIDs <- mapIds(org.Hs.eg.db, 
+                    keys = geneSymbols,
+                    keytype = "SYMBOL", 
+                    column = "ENTREZID")
+
+# Remove genes without Entrez ID mapping
+entrezIDs <- na.omit(entrezIDs)
+
+cat("Number of significant DEGs for pathway analysis:", length(entrezIDs), "\n")
+```
+
+```{r go-enrichment, fig.width=12, fig.height=8}
+# Perform GO Biological Process enrichment
+ego <- enrichGO(
+  gene = entrezIDs,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "BP",  # Biological Process
+  pAdjustMethod = "BH",  # Benjamini-Hochberg correction
+  qvalueCutoff = 0.05
+)
+
+# Visualize top enriched pathways
+barplot(ego, 
+        showCategory = 15,
+        title = "Top Enriched GO Biological Processes",
+        font.size = 10)
+```
+
+**What this tells us**:
+
+- The enriched pathways reveal which **biological processes** are most affected by dexamethasone
+- This provides mechanistic insight into how glucocorticoids work at the molecular level
+
+---
+
+# Co-Expression Network Analysis (WGCNA)
+
+## Understanding Gene Co-Expression Networks
+
+WGCNA identifies **modules** of genes that show similar expression patterns across samples. These modules often represent:
+
+- Functionally related genes
+- Genes involved in the same biological pathway
+- Genes responding to the same regulatory signals
+
+```{r network-prep}
+# Prepare data for WGCNA (samples in rows, genes in columns)
+datExpr <- t(norm_counts)
+
+cat("Network dimensions:", nrow(datExpr), "samples ×", ncol(datExpr), "genes\n")
+```
+
+> **Note**: WGCNA requires substantial sample sizes (ideally >15) for stable results. This dataset is small, so results are primarily illustrative.
+
+---
+
+## Selecting Soft-Thresholding Power
+
+WGCNA uses a soft-thresholding approach to construct scale-free networks (mimicking biological networks).
+
+```{r soft-threshold, fig.width=10, fig.height=5}
+# Test different power values
+powers <- c(1:10)
+sft <- pickSoftThreshold(datExpr, powerVector = powers, verbose = 0)
+
+# Visualize scale-free topology fit
+plot(sft$fitIndices[, 1], 
+     -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     xlab = "Soft Threshold (power)", 
+     ylab = "Scale-Free Topology Model Fit (R²)",
+     type = "b",
+     main = "Selecting Soft-Thresholding Power")
+abline(h = 0.8, col = "red", lty = 2)
+```
+
+**Choosing the power**: Select the lowest power where the curve plateaus above 0.8 (red line). Here we use **power = 6**.
+
+---
+
+## Module Detection
+
+```{r module-detection, fig.width=12, fig.height=6}
+# Calculate adjacency matrix
+softPower <- 6
+adjacency <- adjacency(datExpr, power = softPower)
+
+# Convert to topological overlap matrix (TOM)
+TOM <- TOMsimilarity(adjacency)
+dissTOM <- 1 - TOM
+
+# Hierarchical clustering of genes
+geneTree <- hclust(as.dist(dissTOM), method = "average")
+
+# Plot dendrogram
+plot(geneTree, 
+     main = "Gene Clustering Dendrogram (Hierarchical Clustering)",
+     xlab = "", 
+     sub = "",
+     labels = FALSE)
+
+# Detect modules using dynamic tree cutting
+modules <- cutreeDynamic(dendro = geneTree, 
+                         distM = dissTOM,
+                         deepSplit = 2, 
+                         pamRespectsDendro = FALSE,
+                         minClusterSize = 30)
+
+# Display module sizes
+module_table <- table(modules)
+print(module_table)
+```
+
+**Results**: Genes are grouped into **`r length(unique(modules))` modules**. Module 0 contains genes that couldn't be assigned to any module.
+
+**Next steps** (not shown):
+
+- Correlate modules with sample traits (treatment status)
+- Identify hub genes within modules
+- Perform pathway enrichment on module genes
+
+---
+
+# Conclusions and Summary
+
+## Key Findings
+
+1. **`r sum(res$padj < 0.05 & abs(res$log2FoldChange) > 1, na.rm = TRUE)` genes** are significantly differentially expressed (padj < 0.05, |log₂FC| > 1)
+
+2. **Treatment effect is strong**: PCA shows clear separation between treated and untreated samples
+
+3. **Biological pathways** enriched in DEGs reveal glucocorticoid mechanisms of action
+
+4. **Co-expression modules** identify coordinated gene expression programs
+
+## Workflow Summary
+
+```
+Raw Counts → QC & Filtering → Normalization (DESeq2) → 
+  ↓
+Exploratory Analysis (PCA, Heatmaps) → Differential Expression → 
+  ↓
+Pathway Enrichment → Network Analysis (WGCNA)
+```
+
+---
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```
+
+---
+
+<div style="text-align: center; margin-top: 40px; padding: 20px; background-color: #f0f0f0; border-radius: 10px;">
+**End of Tutorial**
+
+*For questions or suggestions, please contact the author.*
+</div>

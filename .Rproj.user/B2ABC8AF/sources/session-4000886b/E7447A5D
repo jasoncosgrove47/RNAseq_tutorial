@@ -1,0 +1,27 @@
+{
+    "id": "E7447A5D",
+    "path": "~/projects/R_training_projects/rnaseq/RNAseq.Rmd",
+    "project_path": "RNAseq.Rmd",
+    "type": "r_markdown",
+    "hash": "368542154",
+    "contents": "",
+    "dirty": false,
+    "created": 1759312557063.0,
+    "source_on_save": false,
+    "relative_order": 3,
+    "properties": {
+        "tempName": "Untitled1",
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "444,1",
+        "scrollLine": "443"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1759317868,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1759317868,
+    "read_only": false,
+    "read_only_alternatives": []
+}

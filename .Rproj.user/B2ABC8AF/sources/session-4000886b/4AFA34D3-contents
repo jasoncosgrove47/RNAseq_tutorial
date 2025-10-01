@@ -1,0 +1,312 @@
+---
+title: "RNASeq Analysis: Practical Tutorial"
+author: "Jason Cosgrove"
+date: "2025-09-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+
+# Core analysis
+# BiocManager::install(c("airway", "DESeq2", "clusterProfiler", 
+#                        "org.Hs.eg.db", "WGCNA", "pheatmap", 
+#                        "EnhancedVolcano"))
+
+library(here)
+library(airway)
+library(DESeq2)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(WGCNA)
+library(pheatmap)
+library(EnhancedVolcano)
+library(vsn)
+library(AnnotationDbi)
+
+#set the working directory, this code will find the parent project directory
+i_am("rnaseq.Rmd")
+```
+
+## Key Information About the Experiment
+
+https://bioconductor.org/packages/release/data/experiment/html/airway.html
+
+Himes BE, Jiang X, Wagner P, Hu R, Wang Q, Klanderman B, Whitaker RM, Duan Q, Lasky-Su J, Nikolos C, Jester W, Johnson M, Panettieri R Jr, Tantisira KG, Weiss ST, Lu Q. “RNA-Seq Transcriptome Profiling Identifies CRISPLD2 as a Glucocorticoid Responsive Gene that Modulates Cytokine Function in Airway Smooth Muscle Cells.” PLoS One. 2014 Jun 13;9(6):e99625. PMID: 24926665. GEO: GSE52778.
+
+From the abstract, a brief description of the RNA-Seq experiment on airway smooth muscle (ASM) cell lines: “Using RNA-Seq, a high-throughput sequencing method, we characterized transcriptomic changes in four primary human ASM cell lines that were treated with dexamethasone - a potent synthetic glucocorticoid (1 micromolar for 18 hours).”
+
+Download the data from the airway package
+
+```{r data}
+
+data("airway")
+# The assay slot holds counts
+counts <- assay(airway)
+coldata <- colData(airway)
+
+
+```
+
+## Data QC and next steps
+
+### Check sequencing library sizes
+```{r QC, echo=FALSE}
+# Check library sizes (sequencing depth)
+librarySizes <- colSums(counts)
+barplot(librarySizes, main="Library sizes per sample", las=2, cex.names=0.7)
+
+```
+
+### Filter out lowly expressed genes
+```{r filter, echo=FALSE}
+# ---- BEFORE FILTERING ----
+# Compute mean counts per gene
+meanCounts <- rowMeans(counts)
+dens_before <- density(log2(meanCounts + 1))
+
+plot(dens_before,
+     main="Kernel density of log2 mean counts (BEFORE filtering)",
+     xlab="log2(mean counts + 1)",
+     lwd=2, col="blue")
+abline(v=log2(10), col="red", lwd=2, lty=2)
+legend("topright", legend=c("Before filtering","Threshold"),
+       col=c("blue","red"), lwd=2, lty=c(1,2))
+
+# ---- FILTERING ----
+# Keep genes with >=10 counts in >=2 samples
+keep <- rowSums(counts >= 10) >= 2
+counts_filtered <- counts[keep, ]
+
+# meanCountsFiltered <- rowMeans(countsFiltered)
+# dens_after <- density(log2(meanCountsFiltered + 1))
+
+# Compute mean counts per gene before and after filtering
+meanCounts_before <- rowMeans(counts)
+meanCounts_after  <- rowMeans(counts_filtered)
+
+# Compute densities
+dens_before <- density(log2(meanCounts_before + 1))
+dens_after  <- density(log2(meanCounts_after + 1))
+
+# Plot both curves on the same graph
+plot(dens_before,
+     main="Kernel density of log2 mean counts\nBefore vs After Filtering",
+     xlab="log2(mean counts + 1)",
+     lwd=2, col="blue")
+lines(dens_after, lwd=2, col="darkgreen")
+
+
+# Add legend
+legend("topright",
+       legend=c("Before filtering","After filtering"),
+       col=c("blue","darkgreen"),
+       lwd=2, lty=c(1,1))
+
+
+
+```
+Before filtering, the dataset had `r dim(counts)[1]` genes across `r dim(counts)[2]` samples.  
+After filtering, the dataset has `r dim(countsFiltered)[1]` genes across `r dim(countsFiltered)[2]` samples.
+
+
+## Make the DESeq2 object
+```{r makedeseqobj, echo=FALSE}
+# Create a DESeqDataSet object:
+# - countData = the filtered raw counts matrix (genes x samples)
+# - colData   = the sample metadata (e.g. which cell line, treatment status)
+# - design    = the experimental design formula
+#               ~ cell + dex means:
+#                 * "cell" is included as a covariate (adjust for differences between cell lines)
+#                 * "dex" is the variable of interest (treated vs untreated)
+dds <- DESeqDataSetFromMatrix(
+  countData = counts_filtered,
+  colData   = coldata,
+  design    = ~ cell + dex
+)
+
+
+
+# Suppose rownames(dds) are ENSG IDs
+ensg_ids <- rownames(dds)
+
+# Map to gene symbols
+gene_symbols <- mapIds(org.Hs.eg.db,
+                       keys=ensg_ids,
+                       column="SYMBOL",
+                       keytype="ENSEMBL",
+                       multiVals="first")
+
+symbols <- gene_symbols[rownames(dds)]
+
+# replace NAs with original ENSG and make unique
+rownames(dds) <- ifelse(is.na(symbols), rownames(dds), symbols) %>% 
+  make.unique()
+
+
+
+
+```
+
+```{r deseqpipeline, echo=FALSE}
+# Run the DESeq2 pipeline:
+# This performs:
+#   1. Estimate size factors (library depth normalization)
+#   2. Estimate gene-wise dispersion
+#   3. Fit negative binomial GLM for each gene
+#   4. Shrinkage estimation and hypothesis testing
+dds <- DESeq(dds)
+
+# Extract normalized counts:
+# - These are adjusted for sequencing depth (library size)
+# - Use these for exploratory analysis (e.g. PCA, clustering, plots)
+# - DO NOT use them for differential testing (DESeq2 works internally on raw counts)
+norm_counts <- counts(dds, normalized=TRUE)
+
+
+# Compute library sizes
+raw_libsize  <- colSums(counts_filtered)
+norm_libsize <- colSums(norm_counts)
+
+# Combine into one vector with labels
+all_libsize <- c(raw_libsize, norm_libsize)
+sample_labels <- rep(colnames(counts_filtered), 2)
+group_labels  <- c(rep("Raw", length(raw_libsize)),
+                   rep("Normalized", length(norm_libsize)))
+
+# Barplot
+barplot(all_libsize,
+        col = ifelse(group_labels == "Raw", "skyblue", "lightgreen"),
+        names.arg = paste(sample_labels, group_labels, sep = "\n"),
+        las = 2,
+        ylab = "Library size (sum of counts)",
+        main = "Library sizes before and after normalization")
+
+legend("topright",
+       legend = c("Raw", "Normalized"),
+       fill = c("skyblue", "lightgreen"))
+
+```
+
+
+
+# -------------------------------
+# 4. Exploratory data analysis
+# -------------------------------
+```{r explo, echo=FALSE}
+# PCA plot
+
+vsd <- vst(dds, blind=FALSE)  # variance stabilizing transformation
+
+par(mfrow=c(1,2))
+meanSdPlot(log2(counts(dds, normalized=TRUE) + 1))
+meanSdPlot(assay(vsd))
+
+```
+
+```{r pca, echo=FALSE}
+
+plotPCA(vsd, intgroup="dex")
+
+```
+
+
+```{r heatmap, echo=FALSE}
+# Sample-to-sample distance heatmap
+sampleDist <- dist(t(assay(vsd)))
+pheatmap(as.matrix(sampleDist), clustering_distance_rows=sampleDist,
+         clustering_distance_cols=sampleDist,
+         main="Sample distance heatmap")
+
+```
+
+# -------------------------------
+# 5. Differential expression analysis
+# -------------------------------
+
+```{r dea, echo=FALSE}
+
+res <- results(dds, contrast=c("dex","trt","untrt"))  # treated vs untreated
+summary(res)
+
+# Order by adjusted p-value
+resOrdered <- res[order(res$padj), ]
+
+# Volcano plot
+EnhancedVolcano(resOrdered,
+                lab = rownames(resOrdered),
+                x = "log2FoldChange",
+                y = "padj",
+                pCutoff = 0.05,
+                FCcutoff = 1.0,
+                title = "Differential Expression: dex vs control")
+
+```
+
+
+# -------------------------------
+# 6. Pathway enrichment analysis
+# -------------------------------
+
+```{r pathway, echo=FALSE}
+# Convert significant genes to Entrez IDs
+sigGenes <- subset(resOrdered, padj < 0.05 & abs(log2FoldChange) > 1)
+geneSymbols <- rownames(sigGenes)
+entrezIDs <- mapIds(org.Hs.eg.db, keys=geneSymbols,
+                    keytype="SYMBOL", column="ENTREZID")
+
+# Remove NAs
+entrezIDs <- na.omit(entrezIDs)
+
+# Run GO enrichment
+ego <- enrichGO(gene         = entrezIDs,
+                OrgDb        = org.Hs.eg.db,
+                keyType      = "ENTREZID",
+                ont          = "BP",
+                pAdjustMethod= "BH",
+                qvalueCutoff = 0.05)
+
+# Plot top GO terms
+barplot(ego, showCategory=10,title="GO Biological Process enrichment")
+```
+
+# -------------------------------
+# 7. Weighted Gene Co-expression Network Analysis (WGCNA)
+# -------------------------------
+
+
+```{r network, echo=FALSE}
+# WGCNA requires good-sized data. For demo, we'll use normalized counts.
+# Note: In real analysis, use many samples (>15) for stability.
+datExpr <- t(norm_counts)  # samples in rows, genes in cols
+
+# Choose soft-threshold power
+powers <- c(1:10)
+sft <- pickSoftThreshold(datExpr, powerVector=powers, verbose=0)
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     xlab="Soft Threshold (power)", ylab="Scale Free Topology Model Fit")
+
+softPower <- 6  # for demo
+adjacency <- adjacency(datExpr, power=softPower)
+
+# Construct network and identify modules
+TOM <- TOMsimilarity(adjacency)
+dissTOM <- 1-TOM
+geneTree <- hclust(as.dist(dissTOM), method="average")
+plot(geneTree, main="Gene clustering dendrogram", xlab="", sub="")
+
+modules <- cutreeDynamic(dendro=geneTree, distM=dissTOM,
+                         deepSplit=2, pamRespectsDendro=FALSE)
+table(modules)
+
+
+```
+
+## Reproducibility token
+
+```{r session-info}
+xfun::session_info()
+```
+
